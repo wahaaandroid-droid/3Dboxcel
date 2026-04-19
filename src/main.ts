@@ -1,7 +1,8 @@
 import "./style.css";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { SPAWN_INTERVAL_MS } from "./config";
+import { playMergeSound, playMoveSound, playSpawnSound, resumeAudio } from "./audio";
+import { MOVE_DURATION_MS, SPIN_DURATION_MS } from "./config";
 import {
   DOWNS,
   DOWN_LABELS,
@@ -11,7 +12,9 @@ import {
   isGridFull,
   maxExponent,
   rotateDownIndexAroundX,
+  rotateDownIndexAroundXInverse,
   rotateDownIndexAroundY,
+  rotateDownIndexAroundYInverse,
   settleFully,
   trySpawnFromSky,
   unpack,
@@ -48,7 +51,16 @@ let grid = createInitialGrid();
 let downIndex = 0;
 let score = 0;
 let gameOver = false;
-let spawnTimer = 0;
+
+let busy = false;
+let spinTween: null | { axis: "x" | "y"; from: number; to: number; t0: number; onDone: () => void } = null;
+let moveTween: null | {
+  t0: number;
+  dur: number;
+  starts: THREE.Vector3[];
+  ends: THREE.Vector3[];
+  onDone: () => void;
+} = null;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070b18);
@@ -84,7 +96,9 @@ scene.add(dir);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
-controls.rotateSpeed = isMobileLike ? 0.72 : 1;
+controls.enableRotate = false;
+controls.enablePan = false;
+controls.enableZoom = true;
 controls.target.set(0, 0, 0);
 controls.minDistance = 7;
 controls.maxDistance = 28;
@@ -93,6 +107,9 @@ controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
 const cellGap = 1;
 const origin = (-(N - 1) * cellGap) / 2;
+
+const boardRoot = new THREE.Group();
+scene.add(boardRoot);
 
 const cageGroup = new THREE.Group();
 {
@@ -121,7 +138,7 @@ const cageGroup = new THREE.Group();
   );
   cageGroup.add(glass);
 }
-scene.add(cageGroup);
+boardRoot.add(cageGroup);
 
 const boxGeo = new THREE.BoxGeometry(0.82 * cellGap, 0.82 * cellGap, 0.82 * cellGap);
 type CellVis = { group: THREE.Group; mesh: THREE.Mesh; label: THREE.Sprite };
@@ -153,11 +170,21 @@ function levelColor(exp: number): THREE.Color {
   return new THREE.Color().setHSL(h, 0.55, 0.52);
 }
 
+function slotLocal(i: number): THREE.Vector3 {
+  const { x, y, z } = unpack(i);
+  return new THREE.Vector3(origin + x * cellGap, origin + y * cellGap, origin + z * cellGap);
+}
+
+function skyOffsetLocal(): THREE.Vector3 {
+  const d = DOWNS[downIndex]!;
+  return new THREE.Vector3(-d[0]!, -d[1]!, -d[2]!).multiplyScalar(cellGap * (N + 1.2));
+}
+
 for (let z = 0; z < N; z++) {
   for (let y = 0; y < N; y++) {
     for (let x = 0; x < N; x++) {
       const group = new THREE.Group();
-      group.position.set(origin + x * cellGap, origin + y * cellGap, origin + z * cellGap);
+      group.position.copy(slotLocal(idx3(x, y, z)));
 
       const mat = new THREE.MeshStandardMaterial({
         color: 0x4b6fff,
@@ -181,7 +208,7 @@ for (let z = 0; z < N; z++) {
       label.position.set(0, 0.55 * cellGap, 0);
       group.add(label);
 
-      scene.add(group);
+      boardRoot.add(group);
       cells.push({ group, mesh, label });
     }
   }
@@ -194,7 +221,7 @@ function syncUi(): void {
   gravSel.value = String(downIndex);
 }
 
-function updateVisuals(): void {
+function applyMaterialsFromGrid(): void {
   for (let i = 0; i < cells.length; i++) {
     const exp = grid[i]!;
     const { group, mesh, label } = cells[i]!;
@@ -205,9 +232,6 @@ function updateVisuals(): void {
       continue;
     }
     group.visible = true;
-
-    const { x, y, z } = unpack(i);
-    group.position.set(origin + x * cellGap, origin + y * cellGap, origin + z * cellGap);
 
     mat.color.copy(levelColor(exp));
     mat.emissive.copy(levelColor(exp)).multiplyScalar(0.1);
@@ -222,9 +246,19 @@ function updateVisuals(): void {
   syncUi();
 }
 
-function applySettle(): void {
-  const s = settleFully(grid, DOWNS[downIndex]!);
-  score += s;
+function snapPositionsToGrid(): void {
+  for (let i = 0; i < cells.length; i++) {
+    cells[i]!.group.position.copy(slotLocal(i));
+  }
+}
+
+function updateVisualsInstant(): void {
+  applyMaterialsFromGrid();
+  snapPositionsToGrid();
+}
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
 }
 
 function setGameOver(msg: string): void {
@@ -232,34 +266,216 @@ function setGameOver(msg: string): void {
   statusEl.textContent = msg;
 }
 
-function tickSpawn(dt: number): void {
-  if (gameOver) return;
-  spawnTimer += dt;
-  if (spawnTimer < SPAWN_INTERVAL_MS) return;
-  spawnTimer = 0;
-  const ok = trySpawnFromSky(grid, DOWNS[downIndex]!);
-  if (!ok) {
-    setGameOver("ケース上部から入れません。満杯です。");
-    updateVisuals();
-    return;
+function settleAndScore(): number {
+  return settleFully(grid, DOWNS[downIndex]!);
+}
+
+function startBlockTween(spawnIdx: number): void {
+  const starts: THREE.Vector3[] = [];
+  const ends: THREE.Vector3[] = [];
+  for (let i = 0; i < cells.length; i++) {
+    starts.push(cells[i]!.group.position.clone());
+    ends.push(slotLocal(i));
   }
-  applySettle();
+  if (spawnIdx >= 0) {
+    starts[spawnIdx] = slotLocal(spawnIdx).clone().add(skyOffsetLocal());
+  }
+
+  applyMaterialsFromGrid();
+
+  let moved = false;
+  for (let i = 0; i < cells.length; i++) {
+    if (starts[i]!.distanceToSquared(ends[i]!) > 1e-6) moved = true;
+  }
+  if (moved) playMoveSound();
+
+  moveTween = {
+    t0: performance.now(),
+    dur: MOVE_DURATION_MS,
+    starts,
+    ends,
+    onDone: () => {
+      moveTween = null;
+      snapPositionsToGrid();
+      busy = false;
+      controls.enabled = true;
+    },
+  };
+}
+
+/** 重力変更後の落下・合体・1つ落下・再落下を実行し、ブロック移動をトゥイーン */
+function runPhysicsAfterOrientationChange(spawnOne: boolean): void {
+  const mergeA = settleAndScore();
+  score += mergeA;
+  if (mergeA > 0) playMergeSound();
+
+  let spawnIdx = -1;
+  if (spawnOne) {
+    spawnIdx = trySpawnFromSky(grid, DOWNS[downIndex]!);
+    if (spawnIdx < 0) {
+      setGameOver("ケース上部から入れません。満杯です。");
+      applyMaterialsFromGrid();
+      busy = false;
+      controls.enabled = true;
+      return;
+    }
+    playSpawnSound();
+  }
+
+  const mergeB = settleAndScore();
+  score += mergeB;
+  if (mergeB > 0) playMergeSound();
+
   if (isGridFull(grid)) {
     setGameOver("マスがすべて埋まりました。");
   }
-  updateVisuals();
+
+  startBlockTween(spawnIdx);
 }
+
+function runAfterSpin(nextDown: number): void {
+  downIndex = nextDown;
+  runPhysicsAfterOrientationChange(true);
+}
+
+function beginSpinThenApply(nextDown: number, spinAxis: "x" | "y", angle: number): void {
+  busy = true;
+  controls.enabled = false;
+  boardRoot.rotation.set(0, 0, 0);
+  spinTween = {
+    axis: spinAxis,
+    from: 0,
+    to: angle,
+    t0: performance.now(),
+    onDone: () => {
+      spinTween = null;
+      boardRoot.rotation.set(0, 0, 0);
+      runAfterSpin(nextDown);
+    },
+  };
+}
+
+function applyRotationBySwipe(dx: number, dy: number): void {
+  if (busy || gameOver) return;
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  if (Math.max(ax, ay) < 48) return;
+
+  void resumeAudio();
+
+  if (ax >= ay) {
+    const next = dx < 0 ? rotateDownIndexAroundY(downIndex) : rotateDownIndexAroundYInverse(downIndex);
+    const ang = dx < 0 ? Math.PI / 2 : -Math.PI / 2;
+    beginSpinThenApply(next, "y", ang);
+  } else {
+    const next = dy < 0 ? rotateDownIndexAroundX(downIndex) : rotateDownIndexAroundXInverse(downIndex);
+    const ang = dy < 0 ? -Math.PI / 2 : Math.PI / 2;
+    beginSpinThenApply(next, "x", ang);
+  }
+}
+
+function applyRotationManual(nextDown: number, spinAxis: "x" | "y", angle: number): void {
+  if (busy || gameOver) return;
+  void resumeAudio();
+  beginSpinThenApply(nextDown, spinAxis, angle);
+}
+
+const RING_Y = [0, 2, 1, 3] as const;
+const RING_X = [0, 4, 1, 5] as const;
+
+function indexInRing(ring: readonly number[], v: number): number {
+  return ring.indexOf(v);
+}
+
+function applyGravityFromSelect(next: number): void {
+  if (busy || gameOver || next === downIndex) return;
+  void resumeAudio();
+
+  const iy = indexInRing(RING_Y, downIndex);
+  const jy = indexInRing(RING_Y, next);
+  const ix = indexInRing(RING_X, downIndex);
+  const jx = indexInRing(RING_X, next);
+
+  if (iy >= 0 && jy >= 0) {
+    const d = (jy - iy + RING_Y.length) % RING_Y.length;
+    if (d === 1) {
+      applyRotationManual(next, "y", Math.PI / 2);
+      return;
+    }
+    if (d === 3) {
+      applyRotationManual(next, "y", -Math.PI / 2);
+      return;
+    }
+  }
+
+  if (ix >= 0 && jx >= 0) {
+    const d = (jx - ix + RING_X.length) % RING_X.length;
+    if (d === 1) {
+      applyRotationManual(next, "x", -Math.PI / 2);
+      return;
+    }
+    if (d === 3) {
+      applyRotationManual(next, "x", Math.PI / 2);
+      return;
+    }
+  }
+
+  busy = true;
+  controls.enabled = false;
+  downIndex = next;
+  runPhysicsAfterOrientationChange(true);
+}
+
+let swipeStart: null | { x: number; y: number; id: number } = null;
+
+function isInUi(target: EventTarget | null): boolean {
+  if (!(target instanceof Node)) return false;
+  return Boolean((target as HTMLElement).closest?.("#ui"));
+}
+
+canvas.addEventListener(
+  "pointerdown",
+  (ev) => {
+    if (isInUi(ev.target)) return;
+    swipeStart = { x: ev.clientX, y: ev.clientY, id: ev.pointerId };
+    void resumeAudio();
+  },
+  { passive: true }
+);
+
+canvas.addEventListener(
+  "pointerup",
+  (ev) => {
+    if (!swipeStart || swipeStart.id !== ev.pointerId) return;
+    const dx = ev.clientX - swipeStart.x;
+    const dy = ev.clientY - swipeStart.y;
+    swipeStart = null;
+    applyRotationBySwipe(dx, dy);
+  },
+  { passive: true }
+);
+
+canvas.addEventListener(
+  "pointercancel",
+  (ev) => {
+    if (swipeStart && swipeStart.id === ev.pointerId) swipeStart = null;
+  },
+  { passive: true }
+);
 
 function resetGame(): void {
   gameOver = false;
   statusEl.textContent = "";
   score = 0;
-  spawnTimer = 0;
   downIndex = 0;
+  spinTween = null;
+  moveTween = null;
+  busy = false;
+  boardRoot.rotation.set(0, 0, 0);
   grid = createInitialGrid();
-  applySettle();
-  syncUi();
-  updateVisuals();
+  score += settleAndScore();
+  controls.enabled = true;
+  updateVisualsInstant();
 }
 
 function onResize(): void {
@@ -277,36 +493,55 @@ screen.orientation?.addEventListener("change", onResize);
 onResize();
 
 gravSel.addEventListener("change", () => {
-  if (gameOver) return;
-  downIndex = Number(gravSel.value);
-  applySettle();
-  updateVisuals();
+  applyGravityFromSelect(Number(gravSel.value));
 });
 
 rotYBtn.addEventListener("click", () => {
-  if (gameOver) return;
-  downIndex = rotateDownIndexAroundY(downIndex);
-  applySettle();
-  updateVisuals();
+  const next = rotateDownIndexAroundY(downIndex);
+  applyRotationManual(next, "y", Math.PI / 2);
 });
 
 rotXBtn.addEventListener("click", () => {
-  if (gameOver) return;
-  downIndex = rotateDownIndexAroundX(downIndex);
-  applySettle();
-  updateVisuals();
+  const next = rotateDownIndexAroundX(downIndex);
+  applyRotationManual(next, "x", -Math.PI / 2);
 });
 
 resetBtn.addEventListener("click", () => resetGame());
 
 resetGame();
 
-let last = performance.now();
 function tick(now: number): void {
-  const dt = now - last;
-  last = now;
   controls.update();
-  tickSpawn(dt);
+
+  if (spinTween) {
+    const u = Math.min(1, (now - spinTween.t0) / SPIN_DURATION_MS);
+    const k = easeOutCubic(u);
+    const a = spinTween.from + (spinTween.to - spinTween.from) * k;
+    if (spinTween.axis === "y") {
+      boardRoot.rotation.x = 0;
+      boardRoot.rotation.y = a;
+    } else {
+      boardRoot.rotation.y = 0;
+      boardRoot.rotation.x = a;
+    }
+    if (u >= 1) {
+      const done = spinTween.onDone;
+      spinTween = null;
+      done();
+    }
+  } else if (moveTween) {
+    const u = Math.min(1, (now - moveTween.t0) / moveTween.dur);
+    const k = easeOutCubic(u);
+    for (let i = 0; i < cells.length; i++) {
+      cells[i]!.group.position.lerpVectors(moveTween.starts[i]!, moveTween.ends[i]!, k);
+    }
+    if (u >= 1) {
+      const done = moveTween.onDone;
+      moveTween = null;
+      done();
+    }
+  }
+
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }

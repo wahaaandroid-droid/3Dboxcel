@@ -155,10 +155,9 @@ export function settleFully(g: Uint8Array, down: Vec3): number {
   return total;
 }
 
-/** 上端（空側）のセルが空なら指数1（数字2）を置く */
-export function trySpawnFromSky(g: Uint8Array, down: Vec3): boolean {
+/** 上端（空側）のセルが空なら指数1（数字2）を置く。戻り値はセルインデックス、失敗時は -1 */
+export function trySpawnFromSky(g: Uint8Array, down: Vec3): number {
   const axis = primaryAxis(down);
-  const d = down[axis]!;
   const order = Array.from({ length: N * N }, (_, i) => i);
   shuffleInPlace(order);
 
@@ -168,10 +167,10 @@ export function trySpawnFromSky(g: Uint8Array, down: Vec3): boolean {
     const [x, y, z] = coordOnLine(down, N - 1, p1, p2);
     if (getAt(g, x, y, z) === 0) {
       setAt(g, x, y, z, 1);
-      return true;
+      return idx3(x, y, z);
     }
   }
-  return false;
+  return -1;
 }
 
 export function isGridFull(g: Uint8Array): boolean {
@@ -198,10 +197,24 @@ export function rotateDownIndexAroundY(downIndex: number): number {
   return ring[(i + 1) % ring.length]!;
 }
 
+export function rotateDownIndexAroundYInverse(downIndex: number): number {
+  const ring = [0, 2, 1, 3] as const;
+  const i = ring.indexOf(downIndex as 0 | 2 | 1 | 3);
+  if (i < 0) return ring[0]!;
+  return ring[(i + ring.length - 1) % ring.length]!;
+}
+
 /** 左右軸周り：-Y → +Z → +Y → -Z */
 export function rotateDownIndexAroundX(downIndex: number): number {
   const ring = [0, 4, 1, 5] as const;
   const i = ring.indexOf(downIndex as 0 | 4 | 1 | 5);
   if (i < 0) return ring[0]!;
   return ring[(i + 1) % ring.length]!;
+}
+
+export function rotateDownIndexAroundXInverse(downIndex: number): number {
+  const ring = [0, 4, 1, 5] as const;
+  const i = ring.indexOf(downIndex as 0 | 4 | 1 | 5);
+  if (i < 0) return ring[0]!;
+  return ring[(i + ring.length - 1) % ring.length]!;
 }
