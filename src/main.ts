@@ -11,10 +11,6 @@ import {
   idx3,
   isGridFull,
   maxExponent,
-  rotateDownIndexAroundX,
-  rotateDownIndexAroundXInverse,
-  rotateDownIndexAroundY,
-  rotateDownIndexAroundYInverse,
   settleFully,
   trySpawnFromSky,
   unpack,
@@ -25,19 +21,9 @@ const canvas = document.querySelector<HTMLCanvasElement>("#c")!;
 const howto = document.querySelector<HTMLDetailsElement>("#howto");
 const scoreEl = document.querySelector<HTMLSpanElement>("#score")!;
 const maxEl = document.querySelector<HTMLSpanElement>("#max")!;
+const gravLabel = document.querySelector<HTMLSpanElement>("#gravLabel")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#reset")!;
-const gravSel = document.querySelector<HTMLSelectElement>("#grav")!;
-const rotYBtn = document.querySelector<HTMLButtonElement>("#rot-y")!;
-const rotXBtn = document.querySelector<HTMLButtonElement>("#rot-x")!;
-
-for (let i = 0; i < DOWNS.length; i++) {
-  const opt = document.createElement("option");
-  opt.value = String(i);
-  opt.textContent = DOWN_LABELS[i]!;
-  gravSel.appendChild(opt);
-}
-gravSel.value = "0";
 
 if (howto && window.matchMedia("(min-width: 720px)").matches) {
   howto.open = true;
@@ -96,14 +82,25 @@ scene.add(dir);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
-controls.enableRotate = false;
+controls.enableRotate = !isMobileLike;
 controls.enablePan = false;
 controls.enableZoom = true;
 controls.target.set(0, 0, 0);
 controls.minDistance = 7;
 controls.maxDistance = 28;
-controls.touches.ONE = THREE.TOUCH.ROTATE;
+controls.rotateSpeed = isMobileLike ? 0.65 : 0.9;
+controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+if (!isMobileLike) {
+  controls.touches.ONE = THREE.TOUCH.ROTATE;
+}
 controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
+
+controls.addEventListener("change", () => {
+  if (!busy && !spinTween && !moveTween) {
+    syncDownIndexFromCamera();
+    syncUi();
+  }
+});
 
 const cellGap = 1;
 const origin = (-(N - 1) * cellGap) / 2;
@@ -180,6 +177,23 @@ function skyOffsetLocal(): THREE.Vector3 {
   return new THREE.Vector3(-d[0]!, -d[1]!, -d[2]!).multiplyScalar(cellGap * (N + 1.2));
 }
 
+/** 画面の下（カメラ画像の -Y）をワールドへ → 4種の重力のうち最も近い向き */
+function syncDownIndexFromCamera(): void {
+  const v = new THREE.Vector3(0, -1, 0);
+  v.transformDirection(camera.matrixWorld);
+  let best = 0;
+  let bestDot = -Infinity;
+  for (let i = 0; i < DOWNS.length; i++) {
+    const d = DOWNS[i]!;
+    const dot = v.x * d[0]! + v.y * d[1]! + v.z * d[2]!;
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = i;
+    }
+  }
+  downIndex = best;
+}
+
 for (let z = 0; z < N; z++) {
   for (let y = 0; y < N; y++) {
     for (let x = 0; x < N; x++) {
@@ -218,7 +232,7 @@ function syncUi(): void {
   scoreEl.textContent = String(score);
   const mx = maxExponent(grid);
   maxEl.textContent = String(valueFromExp(mx));
-  gravSel.value = String(downIndex);
+  gravLabel.textContent = DOWN_LABELS[downIndex] ?? "";
 }
 
 function applyMaterialsFromGrid(): void {
@@ -250,11 +264,6 @@ function snapPositionsToGrid(): void {
   for (let i = 0; i < cells.length; i++) {
     cells[i]!.group.position.copy(slotLocal(i));
   }
-}
-
-function updateVisualsInstant(): void {
-  applyMaterialsFromGrid();
-  snapPositionsToGrid();
 }
 
 function easeOutCubic(t: number): number {
@@ -303,7 +312,6 @@ function startBlockTween(spawnIdx: number): void {
   };
 }
 
-/** 重力変更後の落下・合体・1つ落下・再落下を実行し、ブロック移動をトゥイーン */
 function runPhysicsAfterOrientationChange(spawnOne: boolean): void {
   const mergeA = settleAndScore();
   score += mergeA;
@@ -333,12 +341,12 @@ function runPhysicsAfterOrientationChange(spawnOne: boolean): void {
   startBlockTween(spawnIdx);
 }
 
-function runAfterSpin(nextDown: number): void {
-  downIndex = nextDown;
+function runAfterSpin(): void {
+  syncDownIndexFromCamera();
   runPhysicsAfterOrientationChange(true);
 }
 
-function beginSpinThenApply(nextDown: number, spinAxis: "x" | "y", angle: number): void {
+function beginSpinThenApply(spinAxis: "x" | "y", angle: number): void {
   busy = true;
   controls.enabled = false;
   boardRoot.rotation.set(0, 0, 0);
@@ -350,12 +358,13 @@ function beginSpinThenApply(nextDown: number, spinAxis: "x" | "y", angle: number
     onDone: () => {
       spinTween = null;
       boardRoot.rotation.set(0, 0, 0);
-      runAfterSpin(nextDown);
+      runAfterSpin();
     },
   };
 }
 
-function applyRotationBySwipe(dx: number, dy: number): void {
+/** スワイプ方向に合わせた視覚回転（重力は終了後にカメラの「下」で決定） */
+function applySwipeForTilt(dx: number, dy: number): void {
   if (busy || gameOver) return;
   const ax = Math.abs(dx);
   const ay = Math.abs(dy);
@@ -364,69 +373,15 @@ function applyRotationBySwipe(dx: number, dy: number): void {
   void resumeAudio();
 
   if (ax >= ay) {
-    const next = dx < 0 ? rotateDownIndexAroundY(downIndex) : rotateDownIndexAroundYInverse(downIndex);
     const ang = dx < 0 ? Math.PI / 2 : -Math.PI / 2;
-    beginSpinThenApply(next, "y", ang);
+    beginSpinThenApply("y", ang);
   } else {
-    const next = dy < 0 ? rotateDownIndexAroundX(downIndex) : rotateDownIndexAroundXInverse(downIndex);
     const ang = dy < 0 ? -Math.PI / 2 : Math.PI / 2;
-    beginSpinThenApply(next, "x", ang);
+    beginSpinThenApply("x", ang);
   }
 }
 
-function applyRotationManual(nextDown: number, spinAxis: "x" | "y", angle: number): void {
-  if (busy || gameOver) return;
-  void resumeAudio();
-  beginSpinThenApply(nextDown, spinAxis, angle);
-}
-
-const RING_Y = [0, 2, 1, 3] as const;
-const RING_X = [0, 4, 1, 5] as const;
-
-function indexInRing(ring: readonly number[], v: number): number {
-  return ring.indexOf(v);
-}
-
-function applyGravityFromSelect(next: number): void {
-  if (busy || gameOver || next === downIndex) return;
-  void resumeAudio();
-
-  const iy = indexInRing(RING_Y, downIndex);
-  const jy = indexInRing(RING_Y, next);
-  const ix = indexInRing(RING_X, downIndex);
-  const jx = indexInRing(RING_X, next);
-
-  if (iy >= 0 && jy >= 0) {
-    const d = (jy - iy + RING_Y.length) % RING_Y.length;
-    if (d === 1) {
-      applyRotationManual(next, "y", Math.PI / 2);
-      return;
-    }
-    if (d === 3) {
-      applyRotationManual(next, "y", -Math.PI / 2);
-      return;
-    }
-  }
-
-  if (ix >= 0 && jx >= 0) {
-    const d = (jx - ix + RING_X.length) % RING_X.length;
-    if (d === 1) {
-      applyRotationManual(next, "x", -Math.PI / 2);
-      return;
-    }
-    if (d === 3) {
-      applyRotationManual(next, "x", Math.PI / 2);
-      return;
-    }
-  }
-
-  busy = true;
-  controls.enabled = false;
-  downIndex = next;
-  runPhysicsAfterOrientationChange(true);
-}
-
-let swipeStart: null | { x: number; y: number; id: number } = null;
+let swipeStart: null | { x: number; y: number; id: number; t: number } = null;
 
 function isInUi(target: EventTarget | null): boolean {
   if (!(target instanceof Node)) return false;
@@ -437,7 +392,7 @@ canvas.addEventListener(
   "pointerdown",
   (ev) => {
     if (isInUi(ev.target)) return;
-    swipeStart = { x: ev.clientX, y: ev.clientY, id: ev.pointerId };
+    swipeStart = { x: ev.clientX, y: ev.clientY, id: ev.pointerId, t: performance.now() };
     void resumeAudio();
   },
   { passive: true }
@@ -449,8 +404,11 @@ canvas.addEventListener(
     if (!swipeStart || swipeStart.id !== ev.pointerId) return;
     const dx = ev.clientX - swipeStart.x;
     const dy = ev.clientY - swipeStart.y;
+    const dt = performance.now() - swipeStart.t;
     swipeStart = null;
-    applyRotationBySwipe(dx, dy);
+    const quick = dt < 320;
+    const far = Math.max(Math.abs(dx), Math.abs(dy)) >= 48;
+    if (quick && far) applySwipeForTilt(dx, dy);
   },
   { passive: true }
 );
@@ -467,15 +425,17 @@ function resetGame(): void {
   gameOver = false;
   statusEl.textContent = "";
   score = 0;
-  downIndex = 0;
   spinTween = null;
   moveTween = null;
   busy = false;
   boardRoot.rotation.set(0, 0, 0);
   grid = createInitialGrid();
+  syncDownIndexFromCamera();
   score += settleAndScore();
   controls.enabled = true;
-  updateVisualsInstant();
+  applyMaterialsFromGrid();
+  snapPositionsToGrid();
+  syncUi();
 }
 
 function onResize(): void {
@@ -491,20 +451,6 @@ window.visualViewport?.addEventListener("resize", onResize);
 window.visualViewport?.addEventListener("scroll", onResize);
 screen.orientation?.addEventListener("change", onResize);
 onResize();
-
-gravSel.addEventListener("change", () => {
-  applyGravityFromSelect(Number(gravSel.value));
-});
-
-rotYBtn.addEventListener("click", () => {
-  const next = rotateDownIndexAroundY(downIndex);
-  applyRotationManual(next, "y", Math.PI / 2);
-});
-
-rotXBtn.addEventListener("click", () => {
-  const next = rotateDownIndexAroundX(downIndex);
-  applyRotationManual(next, "x", -Math.PI / 2);
-});
 
 resetBtn.addEventListener("click", () => resetGame());
 

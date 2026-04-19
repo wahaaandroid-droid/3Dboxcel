@@ -18,18 +18,14 @@
       <details class="howto" id="howto">
         <summary>遊び方（タップで開閉）</summary>
         <p class="hint">
-        5×5×5 の透明ケースに数字キューブがあります。<strong>キャンバス上でスワイプ</strong>した方向にケースが
-        90° 回転し「下」が変わり、落下と 2048 風の合体が起きます。<strong>回転のたびに上から 2 が 1 つ</strong>入ります（自動落下はありません）。ピンチでズーム。音が鳴る場合は端末のミュートを解除してください。
+        5×5×5 の透明ケースに数字キューブがあります。<strong>重力は常に画面の下向き</strong>に最も近い「床の向き」4種のいずれかにスナップされます（カメラを回すと変わります）。<strong>素早くスワイプ</strong>するとケースが 90°
+        傾き、落下・合体のあと<strong>2 が 1 つ</strong>追加されます。長押しドラッグは視点回転（PC）。ピンチでズーム。音はミュート解除で。
         </p>
       </details>
-      <div class="row">
-        <label class="lbl" for="grav">いまの下（重力）</label>
-        <select id="grav"></select>
-      </div>
-      <div class="rot-btns">
-        <button type="button" id="rot-y" title="上から見て反時計回り">⟲ 90°（上視点）</button>
-        <button type="button" id="rot-x" title="左右軸まわり">⟲ 90°（左右軸）</button>
-      </div>
+      <p class="grav-line">
+        <span class="lbl">いまの床の向き</span>
+        <strong id="gravLabel">—</strong>
+      </p>
       <div class="stats">
         <span>スコア: <strong id="score">0</strong></span>
         <span>最大ブロック: <strong id="max">2</strong></span>

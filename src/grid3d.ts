@@ -7,23 +7,22 @@ export type CellExp = number;
 
 export type Vec3 = readonly [number, number, number];
 
-/** 重力（下向き）単位ベクトル。インデックスで UI と同期 */
+/**
+ * 重力は「床に倒れる側面」4種類のみ（ワールド軸に沿った単位ベクトル）。
+ * プレイヤー視点の「下」は main 側でこの4つにスナップする。
+ */
 export const DOWNS: Vec3[] = [
   [0, -1, 0],
-  [0, 1, 0],
   [1, 0, 0],
   [-1, 0, 0],
   [0, 0, 1],
-  [0, 0, -1],
 ];
 
 export const DOWN_LABELS = [
-  "下 -Y",
-  "上 +Y",
-  "右 +X",
-  "左 -X",
-  "奥 +Z",
-  "手前 -Z",
+  "床（-Y）",
+  "右壁（+X 側が底）",
+  "左壁（-X 側が底）",
+  "手前壁（+Z 側が底）",
 ];
 
 export function idx3(x: number, y: number, z: number): number {
@@ -157,7 +156,6 @@ export function settleFully(g: Uint8Array, down: Vec3): number {
 
 /** 上端（空側）のセルが空なら指数1（数字2）を置く。戻り値はセルインデックス、失敗時は -1 */
 export function trySpawnFromSky(g: Uint8Array, down: Vec3): number {
-  const axis = primaryAxis(down);
   const order = Array.from({ length: N * N }, (_, i) => i);
   shuffleInPlace(order);
 
@@ -187,34 +185,4 @@ export function maxExponent(g: Uint8Array): number {
 export function valueFromExp(e: CellExp): number {
   if (e <= 0) return 0;
   return 1 << e;
-}
-
-/** 「上から見て反時計回り」：-Y → +X → +Y → -X */
-export function rotateDownIndexAroundY(downIndex: number): number {
-  const ring = [0, 2, 1, 3] as const;
-  const i = ring.indexOf(downIndex as 0 | 2 | 1 | 3);
-  if (i < 0) return ring[0]!;
-  return ring[(i + 1) % ring.length]!;
-}
-
-export function rotateDownIndexAroundYInverse(downIndex: number): number {
-  const ring = [0, 2, 1, 3] as const;
-  const i = ring.indexOf(downIndex as 0 | 2 | 1 | 3);
-  if (i < 0) return ring[0]!;
-  return ring[(i + ring.length - 1) % ring.length]!;
-}
-
-/** 左右軸周り：-Y → +Z → +Y → -Z */
-export function rotateDownIndexAroundX(downIndex: number): number {
-  const ring = [0, 4, 1, 5] as const;
-  const i = ring.indexOf(downIndex as 0 | 4 | 1 | 5);
-  if (i < 0) return ring[0]!;
-  return ring[(i + 1) % ring.length]!;
-}
-
-export function rotateDownIndexAroundXInverse(downIndex: number): number {
-  const ring = [0, 4, 1, 5] as const;
-  const i = ring.indexOf(downIndex as 0 | 4 | 1 | 5);
-  if (i < 0) return ring[0]!;
-  return ring[(i + ring.length - 1) % ring.length]!;
 }
