@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#070b18" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="format-detection" content="telephone=no" />
+    <title>ボクセル・マージ（3D演算パズル）</title>
+  </head>
+  <body>
+    <div id="ui">
+      <h1>ボクセル・マージ</h1>
+      <details class="howto" id="howto">
+        <summary>遊び方（タップで開閉）</summary>
+        <p class="hint">
+        5×5×5 の透明ケースに数字キューブが落ちます。同じ数字が重力方向の一列で隣ると
+        <strong>2048 風に合体</strong>して倍になります。ケースを 90° 回転させると「下」が変わり、一斉落下と連鎖が起きます。上から常に新しい
+        <strong>2</strong> が入るので、満杯にならないよう整理し続けてください。
+        </p>
+      </details>
+      <div class="row">
+        <label class="lbl" for="grav">いまの下（重力）</label>
+        <select id="grav"></select>
+      </div>
+      <div class="rot-btns">
+        <button type="button" id="rot-y" title="上から見て反時計回り">⟲ 90°（上視点）</button>
+        <button type="button" id="rot-x" title="左右軸まわり">⟲ 90°（左右軸）</button>
+      </div>
+      <div class="stats">
+        <span>スコア: <strong id="score">0</strong></span>
+        <span>最大ブロック: <strong id="max">2</strong></span>
+      </div>
+      <p class="status" id="status"></p>
+      <button type="button" id="reset">リセット</button>
+    </div>
+    <canvas id="c"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
